@@ -1,14 +1,14 @@
 {
-  "id": "lula/component-classes-exporter",
-  "name": "Lula Component Classes Exporter",
-  "description": "Generates @layer components CSS classes from component-level design tokens. Pairs with your Tailwind v4 exporter.",
-  "author": "Lula Design System",
-  "organization": "Lula",
-  "homepage": "",
-  "version": "1.0.0",
-  "engine": "latest",
-  "executable": "/dist/build.js",
-  "usesBrands": false,
-  "usesThemes": false,
-  "tags": ["CSS", "Tailwind", "Tokens", "Components"]
+    "id": "lula/component-classes-exporter",
+    "name": "Lula Tailwind 4 + Component Classes",
+    "description": "Full Tailwind CSS 4 exporter (fork of Supernova official) that also generates @layer components CSS classes from component-level tokens in your 'Components' Figma collection.",
+    "author": "Lula Design System",
+    "organization": "Lula",
+    "homepage": "",
+    "version": "1.0.0",
+    "engine": "latest",
+    "executable": "/dist/build.js",
+    "usesBrands": true,
+    "usesThemes": true,
+    "tags": ["CSS", "Tailwind", "Tokens", "Components"]
 }

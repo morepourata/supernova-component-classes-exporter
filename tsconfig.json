@@ -1,16 +1,18 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    "baseUrl": ".",
+    "target": "es2021",
+    "outDir": "build",
     "module": "commonjs",
-    "lib": ["ES2020"],
-    "strict": true,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "declaration": true
-  },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", ".build"]
+    "moduleResolution": "node",
+    "strictNullChecks": true,
+    "typeRoots": [
+      "src/*",
+      "types/*"
+    ],
+    "lib": ["ES2021", "dom"],
+    "paths": {
+      "@supernovaio/sdk-exporters": ["./node_modules/@supernovaio/sdk-exporters"]
+    }
+  }
 }

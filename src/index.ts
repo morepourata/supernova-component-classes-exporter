@@ -1,253 +1,326 @@
-import {
-  Supernova,
-  PulsarContext,
-  RemoteVersionIdentifier,
-  AnyOutputFile,
-  TokenGroup,
-} from "@supernovaio/sdk-exporters"
-import { FileHelper } from "@supernovaio/export-helpers"
+/**
+ * This file is the main entry point for the Tailwind CSS exporter.
+ * It handles the export process, including fetching tokens, processing themes,
+ * and generating the appropriate output files based on the export configuration.
+ */
 
-// =============================================================================
-// CONFIGURATION — edit these to match your design system
-// =============================================================================
+import { Supernova, PulsarContext, RemoteVersionIdentifier, AnyOutputFile, TokenType, Token, TokenGroup, TokenTheme, OutputTextFile } from "@supernovaio/sdk-exporters"
+import { ExporterConfiguration, ThemeExportStyle, FileStructure } from "../config"
+import { styleOutputFile, generateStyleFiles, indexOutputFile, resetOutputFile } from "./files/tailwind-file"
+import { ThemeHelper, WriteTokenPropStore } from "@supernovaio/export-utils"
+import { tokenVariableName, isAllowedTokenType } from "./content/token"
+import { variableToTailwindClassName } from "./utils/tailwind-class"
+
+/** Exporter configuration from the resolved default configuration and user overrides */
+export const exportConfiguration = Pulsar.exportConfig<ExporterConfiguration>()
 
 /**
- * Maps the token name (last Figma path segment) to its CSS property.
- * e.g. "padding-x" → "padding-inline"
- * Add new entries here as you introduce new component tokens.
+ * Checks if any Tailwind styles are disabled in the configuration
+ * This function centralizes the check for disabled styles to improve code maintainability
+ * 
+ * @returns boolean indicating if any styles are disabled
  */
-const CSS_PROPERTY_MAP: Record<string, string> = {
-  // Spacing
-  "padding-x":        "padding-inline",
-  "padding-y":        "padding-block",
-  "padding-text-y":   "padding-block",
-  "gap":              "gap",
-  // Shape
-  "radius":           "border-radius",
-  // Color (used in variant modifier classes)
-  "bg":               "background-color",
-  "border":           "border-color",
-  "icon":             "color",
-  "text":             "color",
-  // Sizing
-  "width":            "width",
-  "height":           "height",
-  "min-width":        "min-width",
-  "min-height":       "min-height",
-  // Border
-  "border-width":     "border-width",
+function shouldDisableDefaultTailwindConfiguration(): boolean {
+    return exportConfiguration.disableAllDefaults || 
+           exportConfiguration.disableAnimateDefaults || 
+           exportConfiguration.disableBlurDefaults || 
+           exportConfiguration.disableBorderRadiusDefaults || 
+           exportConfiguration.disableBreakpointDefaults || 
+           exportConfiguration.disableColorDefaults || 
+           exportConfiguration.disableContainerDefaults || 
+           exportConfiguration.disableDropShadowDefaults || 
+           exportConfiguration.disableFontDefaults || 
+           exportConfiguration.disableFontWeightDefaults || 
+           exportConfiguration.disableInsetDefaults || 
+           exportConfiguration.disableLeadingDefaults || 
+           exportConfiguration.disablePerspectiveDefaults || 
+           exportConfiguration.disableShadowDefaults || 
+           exportConfiguration.disableSpacingDefaults || 
+           exportConfiguration.disableTextDefaults || 
+           exportConfiguration.disableTrackingDefaults;
 }
 
 /**
- * Maps Supernova token type to the CSS variable prefix used by your
- * Tailwind / CSS exporter. Must match your exporter's `tokenPrefixes` config.
- *
- * Your current convention:  --spacing-alert-padding-x
- *                            ^^^^^^^^ this is the prefix
+ * Filters out null values from an array of output files
+ * This helper function ensures we only return valid output files
+ * 
+ * @param files Array of output files that may contain null values
+ * @returns Array of non-null output files
  */
-const TYPE_PREFIX_MAP: Record<string, string> = {
-  "Spacing":        "spacing",
-  "BorderRadius":   "radius",
-  "Color":          "color",
-  "Dimension":      "sizing",
-  "Size":           "sizing",
-  "FontSize":       "font-size",
-  "LineHeight":     "line-height",
+function processOutputFiles(files: Array<OutputTextFile | null>): Array<OutputTextFile> {
+    return files.filter((file): file is OutputTextFile => file !== null);
 }
 
 /**
- * The Figma variable collection that holds your component tokens.
- * Set to null to process tokens from ALL collections (not recommended).
+ * Main export function that generates Tailwind CSS files from design tokens
+ * 
+ * This function handles:
+ * - Fetching tokens and token groups from the design system
+ * - Filtering tokens by brand if specified
+ * - Processing themes in different modes (direct, separate files, or combined)
+ * 
+ * @param sdk - Supernova SDK instance
+ * @param context - Export context containing design system information
+ * @returns Promise resolving to an array of output files
  */
-const COMPONENT_COLLECTION_NAME: string | null = "Components"
-
-// =============================================================================
-// HELPERS
-// =============================================================================
-
-/**
- * Builds a map of tokenId → group path segments.
- *
- * In Supernova, a token group for Figma variable "alert/padding-x" has:
- *   group.path = []       (parent path)
- *   group.name = "alert"  (own name)
- *
- * For "alert/success/bg":
- *   group.path = ["alert"]
- *   group.name = "success"
- *
- * So the full group path = [...group.path, group.name]
- * And the token full path = [...group.path, group.name, token.name]
- * We store just the group portion: [...group.path, group.name]
- */
-function buildTokenPathMap(tokenGroups: TokenGroup[]): Map<string, string[]> {
-  const pathMap = new Map<string, string[]>()
-
-  for (const group of tokenGroups) {
-    if (group.isRoot) continue
-
-    const groupFullPath = [
-      ...(group.path ?? []),
-      group.name,
-    ]
-
-    for (const tokenId of group.tokenIds ?? []) {
-      pathMap.set(tokenId, groupFullPath)
-    }
+Pulsar.export(async (sdk: Supernova, context: PulsarContext): Promise<Array<AnyOutputFile>> => {
+  // Fetch data from design system that is currently being exported
+  const remoteVersionIdentifier: RemoteVersionIdentifier = {
+    designSystemId: context.dsId,
+    versionId: context.versionId,
   }
 
-  return pathMap
-}
+  // Fetch tokens and token groups
+  let tokens = await sdk.tokens.getTokens(remoteVersionIdentifier)
+  let tokenGroups = await sdk.tokens.getTokenGroups(remoteVersionIdentifier)
 
-/** Normalise to lowercase kebab-case */
-function normalize(s: string): string {
-  return s.toLowerCase().trim().replace(/\s+/g, "-")
-}
-
-/**
- * If the collection name accidentally appears as the first path segment
- * (can happen depending on Supernova import settings), strip it.
- */
-function stripCollectionPrefix(path: string[], collectionName: string | null): string[] {
-  if (
-    collectionName &&
-    path.length > 0 &&
-    normalize(path[0]) === normalize(collectionName)
-  ) {
-    return path.slice(1)
-  }
-  return path
-}
-
-// =============================================================================
-// MAIN EXPORT
-// =============================================================================
-
-Pulsar.export(
-  async (sdk: Supernova, context: PulsarContext): Promise<Array<AnyOutputFile>> => {
-    const remoteVersionIdentifier: RemoteVersionIdentifier = {
-      designSystemId: context.dsId,
-      versionId: context.versionId,
+  // Filter by brand if specified
+  if (context.brandId) {
+    const brands = await sdk.brands.getBrands(remoteVersionIdentifier)
+    const brand = brands.find((brand) => brand.id === context.brandId || brand.idInVersion === context.brandId)
+    if (!brand) {
+      throw new Error(`Unable to find brand ${context.brandId}.`)
     }
 
-    const tokens = await sdk.tokens.getTokens(remoteVersionIdentifier)
-    const tokenGroups = await sdk.tokens.getTokenGroups(remoteVersionIdentifier)
+    tokens = tokens.filter((token) => token.brandId === brand.id)
+    tokenGroups = tokenGroups.filter((tokenGroup) => tokenGroup.brandId === brand.id)
+  }
 
-    // tokenId → group path (e.g. ["alert"] or ["alert", "success"])
-    const tokenPathMap = buildTokenPathMap(tokenGroups)
+  // Write back generated Tailwind classnames and CSS variable names to token properties
+  // This allows designers to see the generated names directly in their design system
+  // Only runs during actual export, not in preview mode
+  if (!context.isPreview && (exportConfiguration.writeClassnameToProperty || exportConfiguration.writeCSSVariableNameToProperty)) {
+    const writeStore = new WriteTokenPropStore(sdk, remoteVersionIdentifier)
 
-    // componentName → { base: declaration lines, variants: { variantName: declaration lines } }
-    type ComponentData = { base: string[]; variants: Record<string, string[]> }
-    const components = new Map<string, ComponentData>()
+    // Get only tokens that can be used in Tailwind (colors, spacing, etc)
+    // Filters out unsupported token types like assets or compositions
+    const allowedTokens = tokens.filter(token => isAllowedTokenType(token.tokenType))
 
-    for (const token of tokens) {
-      // ── 1. Collection filter ─────────────────────────────────────────────
-      if (COMPONENT_COLLECTION_NAME) {
-        // token.collectionName is available when the token comes from a
-        // Figma variable collection. Fall back gracefully if the property
-        // doesn't exist (older SDK versions).
-        const collName =
-          (token as any).collectionName ??
-          (token as any).origin?.collectionName ??
-          null
+    // Write generated Tailwind classnames (e.g. "bg-primary") back to tokens
+    // These will appear in the "Tailwind class" property of each token
+    if (exportConfiguration.writeClassnameToProperty) {
+      await writeStore.writeTokenProperties(exportConfiguration.propertyToWriteClassnameTo, allowedTokens, (token) => {
+        return variableToTailwindClassName(tokenVariableName(token, tokenGroups))
+      })
+    }
 
-        if (collName && normalize(collName) !== normalize(COMPONENT_COLLECTION_NAME)) {
-          continue
+    // Write generated CSS variable names back to tokens
+    // These will appear in the "CSS variable" property of each token
+    // Can be written as plain names (--color-primary) or with var() syntax
+    if (exportConfiguration.writeCSSVariableNameToProperty) {
+      await writeStore.writeTokenProperties(exportConfiguration.propertyToWriteCSSVariableNameTo, allowedTokens, (token) => {
+        if (exportConfiguration.propertyToWriteCSSVariableNameToIncludesVar) {
+          return `var(--${tokenVariableName(token, tokenGroups)})`
+        } else {
+          return tokenVariableName(token, tokenGroups)
         }
-      }
-
-      // ── 2. Resolve group path ────────────────────────────────────────────
-      const rawGroupPath = tokenPathMap.get(token.id)
-      if (!rawGroupPath || rawGroupPath.length === 0) continue
-
-      const groupPath = stripCollectionPrefix(rawGroupPath, COMPONENT_COLLECTION_NAME)
-      if (groupPath.length === 0) continue
-
-      // ── 3. Lookup CSS property and type prefix ───────────────────────────
-      const tokenName = normalize(token.name)
-      const cssProp = CSS_PROPERTY_MAP[tokenName]
-      if (!cssProp) continue
-
-      const typeStr = token.tokenType as string
-      const typePrefix = TYPE_PREFIX_MAP[typeStr]
-      if (!typePrefix) continue
-
-      // ── 4. Classify: base token or variant token ─────────────────────────
-      const componentName = normalize(groupPath[0])
-
-      if (!components.has(componentName)) {
-        components.set(componentName, { base: [], variants: {} })
-      }
-      const comp = components.get(componentName)!
-
-      if (groupPath.length === 1) {
-        // Base token: alert/padding-x
-        // → .alert { padding-inline: var(--spacing-alert-padding-x); }
-        const cssVar = `--${typePrefix}-${componentName}-${tokenName}`
-        comp.base.push(`    ${cssProp}: var(${cssVar});`)
-      } else if (groupPath.length === 2) {
-        // Variant token: alert/success/bg
-        // → .alert--success { background-color: var(--color-alert-success-bg); }
-        const variantName = normalize(groupPath[1])
-        if (!comp.variants[variantName]) comp.variants[variantName] = []
-        const cssVar = `--${typePrefix}-${componentName}-${variantName}-${tokenName}`
-        comp.variants[variantName].push(`    ${cssProp}: var(${cssVar});`)
-      }
-      // Paths deeper than 2 are intentionally ignored for now
+      })
     }
+  }
 
-    // ── 5. Render CSS ──────────────────────────────────────────────────────
-    const classBlocks: string[] = []
+  // Process themes if specified
+  if (context.themeIds && context.themeIds.length > 0) {
+    const themes = await sdk.tokens.getTokenThemes(remoteVersionIdentifier)
 
-    // Sort components alphabetically for deterministic output
-    const sortedComponents = Array.from(components.entries()).sort((a, b) =>
-      a[0].localeCompare(b[0])
-    )
-
-    for (const [componentName, data] of sortedComponents) {
-      // Base class
-      if (data.base.length > 0) {
-        classBlocks.push(
-          `  /* ${componentName} */\n  .${componentName} {\n${data.base.join("\n")}\n  }`
-        )
+    // Find and validate requested themes
+    const themesToApply = context.themeIds.map((themeId) => {
+      const theme = themes.find((theme) => theme.id === themeId || theme.idInVersion === themeId)
+      if (!theme) {
+        throw new Error(`Unable to find theme ${themeId}.`)
       }
+      return theme
+    })
+    
+    // Handle different theme export modes
+    switch (exportConfiguration.exportThemesAs) {
+      case ThemeExportStyle.ApplyDirectly:
+        // Apply themes directly to tokens and generate a single file
+        tokens = sdk.tokens.computeTokensByApplyingThemes(tokens, tokens, themesToApply)
+        if (exportConfiguration.fileStructure === FileStructure.SingleFile) {
+          return processOutputFiles([
+            styleOutputFile(tokens, tokenGroups),
+            indexOutputFile(tokens)
+          ])
+        } else {
+          const styleFiles = generateStyleFiles(tokens, tokenGroups)
+          const resetFile = resetOutputFile()
+          const indexFile = indexOutputFile(tokens)
+          return [...styleFiles, ...(resetFile ? [resetFile] : []), ...(indexFile ? [indexFile] : [])]
+        }
 
-      // Variant modifier classes (sorted)
-      const sortedVariants = Object.entries(data.variants).sort((a, b) =>
-        a[0].localeCompare(b[0])
-      )
-      for (const [variantName, decls] of sortedVariants) {
-        if (decls.length > 0) {
-          classBlocks.push(
-            `  .${componentName}--${variantName} {\n${decls.join("\n")}\n  }`
+      case ThemeExportStyle.SeparateFiles:
+        // Generate separate files for each theme
+        let outputFiles: Array<OutputTextFile> = []
+        
+        // Add reset file only if file structure is separate per type
+        if (exportConfiguration.fileStructure === FileStructure.SeparateByType) {
+          const resetFile = resetOutputFile()
+          if (resetFile) outputFiles.push(resetFile)
+        }
+        
+        // Generate base files if exportBaseValues is true
+        if (exportConfiguration.exportBaseValues) {
+          if (exportConfiguration.fileStructure === FileStructure.SingleFile) {
+            const baseFile = styleOutputFile(tokens, tokenGroups)
+            if (baseFile) outputFiles.push(baseFile)
+          } else {
+            const baseFiles = generateStyleFiles(tokens, tokenGroups)
+            outputFiles = [...outputFiles, ...baseFiles]
+          }
+        }
+        
+        // Generate theme files
+        themesToApply.forEach(theme => {
+          const themedTokens = sdk.tokens.computeTokensByApplyingThemes(tokens, tokens, [theme])
+          if (exportConfiguration.fileStructure === FileStructure.SingleFile) {
+            const themeFile = styleOutputFile(
+              themedTokens, 
+              tokenGroups, 
+              ThemeHelper.getThemeIdentifier(theme),
+              theme
+            )
+            if (themeFile) outputFiles.push(themeFile)
+          } else {
+            const themeFiles = generateStyleFiles(
+              themedTokens, 
+              tokenGroups, 
+              ThemeHelper.getThemeIdentifier(theme),
+              theme
+            )
+            outputFiles = [...outputFiles, ...themeFiles]
+          }
+        })
+        
+        // Add index file
+        const indexFile = indexOutputFile(tokens, themesToApply)
+        if (indexFile) outputFiles.push(indexFile)
+        
+        return outputFiles
+
+      case ThemeExportStyle.MergedTheme:
+        // Generate a single merged theme file
+        let mergedOutputFiles: Array<OutputTextFile> = []
+        
+        // Add reset file only if file structure is separate per type
+        if (exportConfiguration.fileStructure === FileStructure.SeparateByType) {
+          const resetFile = resetOutputFile()
+          if (resetFile) mergedOutputFiles.push(resetFile)
+        }
+        
+        // Generate base files if exportBaseValues is true
+        if (exportConfiguration.exportBaseValues) {
+          if (exportConfiguration.fileStructure === FileStructure.SingleFile) {
+            const baseFile = styleOutputFile(tokens, tokenGroups)
+            if (baseFile) mergedOutputFiles.push(baseFile)
+          } else {
+            const baseFiles = generateStyleFiles(tokens, tokenGroups)
+            mergedOutputFiles = [...mergedOutputFiles, ...baseFiles]
+          }
+        }
+        
+        // Generate merged theme file
+        const themedTokens = sdk.tokens.computeTokensByApplyingThemes(tokens, tokens, themesToApply)
+        if (exportConfiguration.fileStructure === FileStructure.SingleFile) {
+          const mergedThemeFile = styleOutputFile(
+            themedTokens, 
+            tokenGroups, 
+            'themed',
+            themesToApply[0]
           )
+          if (mergedThemeFile) mergedOutputFiles.push(mergedThemeFile)
+        } else {
+          const mergedThemeFiles = generateStyleFiles(
+            themedTokens, 
+            tokenGroups, 
+            'themed',
+            themesToApply[0]
+          )
+          mergedOutputFiles = [...mergedOutputFiles, ...mergedThemeFiles]
         }
-      }
+        
+        // Add index file
+        const mergedIndexFile = indexOutputFile(tokens, ['themed'])
+        if (mergedIndexFile) mergedOutputFiles.push(mergedIndexFile)
+        
+        return mergedOutputFiles
+    }
+  }
+
+  // Default case: Generate files without themes
+  if (exportConfiguration.fileStructure === FileStructure.SingleFile) {
+    return processOutputFiles([
+        exportConfiguration.exportBaseValues ? styleOutputFile(tokens, tokenGroups) : null,
+        indexOutputFile(tokens)
+    ])
+  } else {
+    const styleFiles = exportConfiguration.exportBaseValues 
+    ? generateStyleFiles(tokens, tokenGroups) 
+    : []
+    const resetFile = exportConfiguration.fileStructure === FileStructure.SeparateByType && shouldDisableDefaultTailwindConfiguration() ? resetOutputFile() : null
+    const indexFile = indexOutputFile(tokens)
+    return [...styleFiles, ...(resetFile ? [resetFile] : []), ...(indexFile ? [indexFile] : [])]
+  }
+})
+
+/**
+ * Helper function to generate files for a given set of tokens and themes
+ * This function is used by the main export function to generate files based on the configuration
+ * 
+ * @param tokens - Array of tokens to process
+ * @param tokenGroups - Array of token groups
+ * @param themes - Array of themes to include
+ * @returns Array of OutputTextFile objects
+ */
+export function generateFiles(tokens: Array<Token>, tokenGroups: Array<TokenGroup>, themes: Array<TokenTheme> = []): Array<OutputTextFile> {
+    const files: Array<OutputTextFile> = []
+
+    // Add reset file only if file structure is separate per type
+    if (exportConfiguration.fileStructure === FileStructure.SeparateByType) {
+        const resetFile = resetOutputFile()
+        if (resetFile) {
+            files.push(resetFile)
+        }
     }
 
-    const header = `/* ==========================================================================
-   Component Classes
-   Auto-generated by Supernova — Lula Component Classes Exporter
-   DO NOT EDIT MANUALLY. Update tokens in Figma, then re-run the pipeline.
-   ========================================================================== */\n\n`
+    // Generate the main Tailwind CSS file
+    if (exportConfiguration.fileStructure === FileStructure.SingleFile) {
+        const mainFile = styleOutputFile(tokens, tokenGroups)
+        if (mainFile) {
+            files.push(mainFile)
+        }
+    } else {
+        const mainFiles = generateStyleFiles(tokens, tokenGroups)
+        files.push(...mainFiles)
+    }
 
-    const content =
-      classBlocks.length > 0
-        ? `${header}@layer components {\n\n${classBlocks.join("\n\n")}\n\n}\n`
-        : `${header}/* ⚠️  No component classes were generated.
-   Checklist:
-   1. Token scopes in Figma — each token needs ONE unique scope (not "all")
-   2. CSS_PROPERTY_MAP in src/index.ts — does it cover all your token names?
-   3. TYPE_PREFIX_MAP — do the prefixes match your CSS/Tailwind exporter?
-   4. COMPONENT_COLLECTION_NAME — does it exactly match your Figma collection?
-*/\n`
+    // Generate themed files if needed
+    themes.forEach(theme => {
+        if (exportConfiguration.fileStructure === FileStructure.SingleFile) {
+            const themedFile = styleOutputFile(
+                tokens, 
+                tokenGroups, 
+                ThemeHelper.getThemeIdentifier(theme), 
+                theme
+            )
+            if (themedFile) {
+                files.push(themedFile)
+            }
+        } else {
+            const themedFiles = generateStyleFiles(
+                tokens, 
+                tokenGroups, 
+                ThemeHelper.getThemeIdentifier(theme), 
+                theme
+            )
+            files.push(...themedFiles)
+        }
+    })
 
-    return [
-      FileHelper.createTextFile({
-        relativePath: "./",
-        fileName: "component-classes.css",
-        content,
-      }),
-    ]
-  }
-)
+    // Add index file
+    const indexFile = indexOutputFile(tokens, themes)
+    if (indexFile) {
+        files.push(indexFile)
+    }
+
+    return files
+}
