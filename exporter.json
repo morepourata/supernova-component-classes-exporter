@@ -1,0 +1,8 @@
+{
+  "id": "lula/component-classes-exporter",
+  "name": "Lula Component Classes Exporter",
+  "description": "Generates @layer components CSS classes from component-level design tokens. Pairs with your existing Tailwind/CSS exporter.",
+  "version": "1.0.0",
+  "author": "Lula Design System",
+  "engineVersion": "2.0.0"
+}
