@@ -598,117 +598,104 @@ export function indexOutputFile(tokens: Array<Token>, themes: Array<TokenTheme |
 // ─── LULA ADDITION: @layer components for component-level tokens ──────────────
 
 /**
- * The name of the Figma collection that holds component-level tokens.
- * Tokens in this collection are structured as:
- *   alert/padding-x     → base class  → .alert { padding-inline: var(--...); }
- *   alert/success/bg    → variant     → .alert--success { background-color: var(--...); }
+ * The name of the Figma variable collection that holds component-level tokens.
+ * Tokens here are structured as:
+ *   alert/padding-x        → base class  → .alert { padding-inline: var(--spacing-alert-padding-x); }
+ *   alert/success/bg       → variant     → .alert--success { background-color: var(--color-alert-success-bg); }
  */
 const COMPONENT_COLLECTION_NAME = "Components"
 
 /**
- * Maps the last segment of a token name to its CSS property.
+ * Maps the token's leaf name to a CSS property.
  */
 const CSS_PROPERTY_MAP: Record<string, string> = {
-  "padding-x":    "padding-inline",
-  "padding-y":    "padding-block",
+  "padding-x":      "padding-inline",
+  "padding-y":      "padding-block",
   "padding-text-y": "padding-block",
-  "gap":          "gap",
-  "radius":       "border-radius",
-  "bg":           "background-color",
-  "border":       "border-color",
-  "icon":         "color",
-  "text":         "color",
-  "width":        "width",
-  "height":       "height",
-  "min-width":    "min-width",
-  "min-height":   "min-height",
-  "border-width": "border-width",
+  "gap":            "gap",
+  "radius":         "border-radius",
+  "bg":             "background-color",
+  "border":         "border-color",
+  "icon":           "color",
+  "text":           "color",
+  "width":          "width",
+  "height":         "height",
+  "min-width":      "min-width",
+  "min-height":     "min-height",
+  "border-width":   "border-width",
 }
 
 /**
- * Maps Supernova token types to the CSS variable prefix used in @theme.
+ * Maps Supernova token type string values to CSS variable prefixes.
  * Must match TAILWIND_TOKEN_PREFIXES in defaults.ts.
  */
-const TYPE_PREFIX_MAP: Record<string, string> = {
-  Space:         "spacing",
-  Size:          "spacing",
-  Dimension:     "spacing",
-  BorderRadius:  "radius",
-  Color:         "color",
-  FontSize:      "text",
-  FontWeight:    "font-weight",
-  Opacity:       "opacity",
-  Shadow:        "shadow",
-  Border:        "border",
-  Blur:          "blur",
+const COMPONENT_TYPE_PREFIX_MAP: Record<string, string> = {
+  "Space":         "spacing",
+  "Size":          "spacing",
+  "Dimension":     "spacing",
+  "BorderRadius":  "radius",
+  "Color":         "color",
+  "FontSize":      "text",
+  "FontWeight":    "font-weight",
+  "Opacity":       "opacity",
+  "Shadow":        "shadow",
+  "Border":        "border",
+  "Blur":          "blur",
 }
 
 /**
- * Generates @layer components CSS from tokens in the "Components" collection.
- * - 2-segment path (e.g. alert/padding-x)  → .alert { padding-inline: var(--spacing-alert-padding-x); }
- * - 3-segment path (e.g. alert/success/bg) → .alert--success { background-color: var(--color-alert-success-bg); }
+ * Generates @layer components CSS from tokens in the Components Figma collection.
+ *
+ * Relies on two SDK facts:
+ *   - TokenGroup.isRoot === true marks collection-level root groups (i.e. Figma collections)
+ *   - token.tokenPath is the path from the collection root (exclusive) to the token (exclusive)
+ *     e.g. for alert/padding-x → tokenPath = ["alert"], name = "padding-x"
+ *     e.g. for alert/success/bg → tokenPath = ["alert","success"], name = "bg"
  */
 export function generateComponentContent(tokens: Array<Token>, tokenGroups: Array<TokenGroup>): string {
-  // Filter to only tokens whose root collection is "Components"
+  // 1. Find the root group for the "Components" collection using isRoot flag
+  const componentsRoot = tokenGroups.find(g => g.isRoot && g.name === COMPONENT_COLLECTION_NAME)
+  if (!componentsRoot) return ""
+
+  // 2. Filter tokens that are descendants of that root
   const componentTokens = tokens.filter(token => {
-    const group = tokenGroups.find(g => g.id === token.parentGroupId)
-    if (!group) return false
-    // Walk up to find the root group
-    let current = group
-    while (current.parentGroupId) {
-      const parent = tokenGroups.find(g => g.id === current.parentGroupId)
-      if (!parent) break
-      current = parent
+    let currentId: string | null = token.parentGroupId
+    while (currentId) {
+      if (currentId === componentsRoot.id) return true
+      const group = tokenGroups.find(g => g.id === currentId)
+      if (!group) break
+      currentId = group.parentGroupId
     }
-    return current.name === COMPONENT_COLLECTION_NAME
+    return false
   })
 
   if (componentTokens.length === 0) return ""
 
-  // Build a map: className → variantName → { cssProperty, cssVarName }[]
+  // 3. Build class map: className → variantName → declarations[]
+  //    using token.tokenPath directly (does NOT include the collection name)
   const classMap = new Map<string, Map<string, Array<{ prop: string; varName: string }>>>()
 
   for (const token of componentTokens) {
-    const group = tokenGroups.find(g => g.id === token.parentGroupId)
-    if (!group) continue
+    const tokenPath = token.tokenPath ?? []
+    if (tokenPath.length === 0) continue
 
-    // Build the full path segments: [rootCollection, ...groups, tokenName]
-    const pathSegments: string[] = []
-    let current = group
-    const groupPath: string[] = []
-    while (current) {
-      groupPath.unshift(current.name)
-      if (!current.parentGroupId) break
-      const parent = tokenGroups.find(g => g.id === current.parentGroupId)
-      if (!parent) break
-      current = parent
-    }
-    // groupPath[0] is the root collection name ("Components"), rest are group names
-    // token.name is the token leaf (e.g. "padding-x")
-    const segments = [...groupPath.slice(1), token.name] // exclude collection root
+    const cssProperty = CSS_PROPERTY_MAP[token.name]
+    if (!cssProperty) continue
 
-    if (segments.length < 2) continue // need at least [component, tokenName]
+    const typePrefix = COMPONENT_TYPE_PREFIX_MAP[token.tokenType] ?? token.tokenType.toLowerCase()
+    const className = tokenPath[0]
 
-    const typePrefix = TYPE_PREFIX_MAP[token.tokenType] ?? token.tokenType.toLowerCase()
-    const tokenName = segments[segments.length - 1]
-    const cssProperty = CSS_PROPERTY_MAP[tokenName]
-    if (!cssProperty) continue // skip tokens we don't know how to map
-
-    let className: string
     let variantName: string
     let cssVarName: string
 
-    if (segments.length === 2) {
-      // Base class: [component, tokenName]
-      className = segments[0]
+    if (tokenPath.length === 1) {
+      // e.g. tokenPath=["alert"], name="padding-x" → .alert { padding-inline: var(--spacing-alert-padding-x); }
       variantName = "__base__"
-      cssVarName = `--${typePrefix}-${segments[0]}-${tokenName}`
+      cssVarName = `--${typePrefix}-${tokenPath[0]}-${token.name}`
     } else {
-      // Variant: [component, variant, tokenName] (or deeper — flatten middle segments)
-      className = segments[0]
-      const variantSegments = segments.slice(1, segments.length - 1)
-      variantName = variantSegments.join("-")
-      cssVarName = `--${typePrefix}-${segments[0]}-${variantName}-${tokenName}`
+      // e.g. tokenPath=["alert","success"], name="bg" → .alert--success { background-color: var(--color-alert-success-bg); }
+      variantName = tokenPath.slice(1).join("-")
+      cssVarName = `--${typePrefix}-${tokenPath.join("-")}-${token.name}`
     }
 
     if (!classMap.has(className)) classMap.set(className, new Map())
@@ -720,9 +707,7 @@ export function generateComponentContent(tokens: Array<Token>, tokenGroups: Arra
   if (classMap.size === 0) return ""
 
   let output = "\n@layer components {\n"
-
   for (const [className, variantMap] of classMap) {
-    // Base class
     const baseDecls = variantMap.get("__base__")
     if (baseDecls && baseDecls.length > 0) {
       output += `  .${className} {\n`
@@ -731,8 +716,6 @@ export function generateComponentContent(tokens: Array<Token>, tokenGroups: Arra
       }
       output += `  }\n`
     }
-
-    // Variant classes
     for (const [variantName, decls] of variantMap) {
       if (variantName === "__base__") continue
       output += `  .${className}--${variantName} {\n`
@@ -742,7 +725,6 @@ export function generateComponentContent(tokens: Array<Token>, tokenGroups: Arra
       output += `  }\n`
     }
   }
-
   output += "}\n"
   return output
 }
