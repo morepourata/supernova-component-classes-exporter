@@ -5,7 +5,7 @@ import {
   AnyOutputFile,
   TokenGroup,
 } from "@supernovaio/sdk-exporters"
-import FileHelper from "@supernovaio/export-helpers"
+import { FileHelper } from "@supernovaio/export-helpers"
 
 // =============================================================================
 // CONFIGURATION — edit these to match your design system

@@ -2,16 +2,23 @@
   "name": "@lula/supernova-component-classes-exporter",
   "version": "1.0.0",
   "description": "Supernova exporter that generates @layer components CSS classes from component design tokens",
-  "main": "src/index.ts",
+  "main": "dist/build.js",
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "dev": "npx webpack --mode=development --watch",
+    "build": "npx webpack --mode=production"
   },
   "dependencies": {
-    "@supernovaio/export-helpers": "^2.0.0",
-    "@supernovaio/sdk-exporters": "^2.0.0"
+    "@supernovaio/export-helpers": "1.0.33"
+  },
+  "peerDependencies": {
+    "@supernovaio/sdk-exporters": "2.3.3"
   },
   "devDependencies": {
-    "typescript": "^5.0.0"
+    "@supernovaio/sdk-exporters": "2.3.3",
+    "terser-webpack-plugin": "5.4.0",
+    "ts-loader": "^7.0.5",
+    "typescript": "^5.2.2",
+    "webpack": "5.105.4",
+    "webpack-cli": "^5.1.4"
   }
 }
